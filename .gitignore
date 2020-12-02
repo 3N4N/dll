@@ -1,2 +1,7 @@
 *tags*
 *.vim
+*ccls*
+
+bin/
+*.o
+*.out
