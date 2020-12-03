@@ -17,7 +17,7 @@ Implementation Guideline
     tolayer1(calling_entity,frame); tolayer5(calling_entity,message) will be
     renamed as tolayer3(calling_entity,packet).
 
-[ ] Unidirectional/bidirectional data transfer. Please follow the TCP assignment
+[x] Unidirectional/bidirectional data transfer. Please follow the TCP assignment
     guideline to achieve this.
 
 [ ] Implementation of piggybacked acknowledgement: To achieve piggybacking with
