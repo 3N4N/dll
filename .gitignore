@@ -6,4 +6,5 @@ bin/
 *.o
 *.out
 
+test.c
 report.*
