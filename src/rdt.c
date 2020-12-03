@@ -62,8 +62,8 @@ enum State {
 struct Entity {
     enum State state;
     int seq;
-    float tint;
-    struct frm lastfrm;
+    float timerInterrupt;
+    struct frm lastFrame;
 }A, B;
 
 int inc_seq(int seq) {
@@ -105,10 +105,10 @@ void A_output(struct pkt packet)
     frame.checksum = get_checksum(&frame);
 
     /* send the frame to B */
-    A.lastfrm = frame;
+    A.lastFrame = frame;
     A.state = WAITING_FOR_ACK;
     tolayer1(0, frame);
-    starttimer(0, A.tint);
+    starttimer(0, A.timerInterrupt);
 
     printf("  A_output: Frame sent: %s.\n", packet.data);
 }
@@ -130,10 +130,10 @@ void B_output(struct pkt packet)
     frame.checksum = get_checksum(&frame);
 
     /* send the frame to B */
-    B.lastfrm = frame;
+    B.lastFrame = frame;
     B.state = WAITING_FOR_ACK;
     tolayer1(1, frame);
-    starttimer(1, B.tint);
+    starttimer(1, B.timerInterrupt);
 
     printf("  B_output: Frame sent: %s.\n", packet.data);
 }
@@ -195,9 +195,9 @@ void A_timerinterrupt(void)
         return;
     }
 
-    printf("  A_timerinterrupt: Resend last frame: %s.\n", A.lastfrm.payload);
-    tolayer1(0, A.lastfrm);
-    starttimer(0, A.tint);
+    printf("  A_timerinterrupt: Resend last frame: %s.\n", A.lastFrame.payload);
+    tolayer1(0, A.lastFrame);
+    starttimer(0, A.timerInterrupt);
 }
 
 /* the following routine will be called once (only) before any other */
@@ -206,7 +206,7 @@ void A_init(void)
 {
     A.state = WAITING_FOR_LAYER3;
     A.seq = 0;
-    A.tint = 25;
+    A.timerInterrupt = 25;
 }
 
 void send_ack(int AorB, int ack)
@@ -276,9 +276,9 @@ void B_timerinterrupt(void)
         return;
     }
 
-    printf("  B_timerinterrupt: Resend last frame: %s.\n", B.lastfrm.payload);
-    tolayer1(1, B.lastfrm);
-    starttimer(1, B.tint);
+    printf("  B_timerinterrupt: Resend last frame: %s.\n", B.lastFrame.payload);
+    tolayer1(1, B.lastFrame);
+    starttimer(1, B.timerInterrupt);
 }
 
 /* the following rouytine will be called once (only) before any other */
@@ -287,7 +287,7 @@ void B_init(void)
 {
     B.state = WAITING_FOR_ACK;
     B.seq = 0;
-    B.tint = 25;
+    B.timerInterrupt = 25;
 }
 
 
