@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: SLIGHTLY MODIFIED
@@ -17,7 +18,7 @@
        (although some can be lost).
 **********************************************************************/
 
-#define BIDIRECTIONAL 0 /* change to 1 if you're doing extra credit */
+#define BIDIRECTIONAL 1 /* change to 1 if you're doing extra credit */
 /* and write a routine called B_output */
 
 /* a "pkt" is the data unit passed from layer 3 (teachers code) to layer  */
@@ -28,11 +29,18 @@ struct pkt
     char data[20];
 };
 
+enum frmtype {
+    DATA,
+    ACK,
+    PACK
+};
+
 /* a frame is the data unit passed from layer 2 (students code) to layer */
 /* 1 (teachers code).  Note the pre-defined frame structure, which all   */
 /* students must follow. */
 struct frm
 {
+    enum frmtype type;
     int seqnum;
     int acknum;
     int checksum;
@@ -48,16 +56,19 @@ void tolayer3(int AorB, char datasent[20]);
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
 enum State {
-    WAIT_LAYER3,
-    WAIT_ACK
+    WAITING_FOR_LAYER3,
+    WAITING_FOR_ACK
 };
 
-enum State A_state;
-int A_seq;
-float A_tint;
-struct frm A_lastfrm;
-
-int B_seq;
+struct Entity {
+    enum State state;
+    bool outstandingACK;
+    int incomingSeq;
+    int outgoingSeq;
+    float timerInterrupt;
+    struct frm lastFrame;
+    int lastACK;
+}A, B;
 
 int inc_seq(int seq) {
     /* Since the sequence is alternating
@@ -81,128 +92,282 @@ int get_checksum(struct frm *frame) {
     return checksum;
 }
 
-/* called from layer 3, passed the data to be sent to other side */
-void A_output(struct pkt packet)
+void send_ack(int AorB, bool isAck, int ack);
+void entity_init(struct Entity* entity);
+void entity_output(int AorB, struct pkt packet);
+void entity_input(int AorB, struct frm frame);
+void entity_timerinterrupt(int AorB);
+
+void entity_output(int AorB, struct pkt packet)
 {
-    if (A_state != WAIT_LAYER3) {
-        printf("  A_output: Packet dropped. ACK not yet received.\n");
+    struct Entity *entity;
+    if (AorB == 0) entity = &A;
+    else entity = &B;
+
+    if (entity->state != WAITING_FOR_LAYER3) {
+        if (AorB == 0)
+            printf("  A_output: Packet dropped. ACK not yet received.\n");
+        else
+            printf("  B_output: Packet dropped. ACK not yet received.\n");
         return;
     }
 
     /* create a frame to send B */
     struct frm frame;
-    frame.seqnum = A_seq;
-    frame.acknum = -1;
+
+    if (entity->outstandingACK) {
+        frame.type = PACK;
+        frame.seqnum = entity->outgoingSeq;
+        frame.acknum = entity->lastACK;
+    } else {
+        frame.type = DATA;
+        frame.seqnum = entity->outgoingSeq;
+        frame.acknum = -1;
+    }
+
     memmove(frame.payload, packet.data, 20);
     frame.checksum = get_checksum(&frame);
 
     /* send the frame to B */
-    A_lastfrm = frame;
-    A_state = WAIT_ACK;
-    tolayer1(0, frame);
-    starttimer(0, A_tint);
+    entity->lastFrame = frame;
+    entity->state = WAITING_FOR_ACK;
+    entity->outstandingACK = false;
+    tolayer1(AorB, frame);
+    starttimer(AorB, entity->timerInterrupt);
 
-    printf("  A_output: Frame sent: %s.\n", packet.data);
+    if (AorB == 0)
+        printf("  A_output: Frame sent: %s:%d.\n", frame.payload, frame.type);
+    else
+        printf("  B_output: Frame sent: %s:%d.\n", frame.payload, frame.type);
+}
+
+/* called from layer 3, passed the data to be sent to other side */
+void A_output(struct pkt packet)
+{
+    entity_output(0, packet);
 }
 
 /* need be completed only for extra credit */
 void B_output(struct pkt packet)
 {
+    entity_output(1, packet);
+}
 
+void entity_input(int AorB, struct frm frame)
+{
+    struct Entity *entity;
+    if (AorB == 0) entity = &A;
+    else entity = &B;
+
+    if (frame.type == ACK) {
+        if (entity->state != WAITING_FOR_ACK) {
+            if (AorB == 0)
+                printf("  A_input: Frame dropped. ACK already received.\n");
+            else
+                printf("  B_input: Frame dropped. ACK already received.\n");
+            return;
+        }
+
+        if (frame.checksum != get_checksum(&frame)) {
+            if (AorB == 0)
+                printf("  A_input: ACK dropped. Corruption.\n");
+            else
+                printf("  B_input: ACK dropped. Corruption.\n");
+            return;
+        }
+
+        if (frame.acknum != entity->outgoingSeq) {
+            if (AorB == 0)
+                printf("  A_input: ACK dropped. Not the expected ACK.\n");
+            else
+                printf("  B_input: ACK dropped. Not the expected ACK.\n");
+            return;
+        }
+
+        if (AorB == 0)
+            printf("  A_input: ACK received.\n");
+        else
+            printf("  B_input: ACK received.\n");
+
+        /* get ready for sendig next packet */
+        stoptimer(AorB);
+        entity->outgoingSeq = inc_seq(entity->outgoingSeq);
+        entity->state = WAITING_FOR_LAYER3;
+    }
+    else if (frame.type == DATA) {
+        if (frame.checksum != get_checksum(&frame)) {
+            if (AorB == 0)
+                printf("  A_input: Frame corrupted.\n");
+            else
+                printf("  B_input: Frame corrupted.\n");
+            send_ack(AorB, false, inc_seq(entity->incomingSeq));
+            return;
+        }
+
+        if (frame.seqnum != entity->incomingSeq) {
+            if (AorB == 0)
+                printf("  A_input: Not the expected SEQ.\n");
+            else
+                printf("  B_input: Not the expected SEQ.\n");
+            send_ack(AorB, false, inc_seq(entity->incomingSeq));
+            return;
+        }
+
+        if (AorB == 0) {
+            printf("  A_input: Frame received: %s:%d\n", frame.payload, frame.type);
+        } else {
+            printf("  B_input: Frame received: %s:%d\n", frame.payload, frame.type);
+        }
+
+        send_ack(AorB, true, entity->incomingSeq);
+
+        tolayer3(AorB, frame.payload);
+        entity->incomingSeq = inc_seq(entity->incomingSeq);
+    } else if (frame.type == PACK) {
+        if (frame.checksum != get_checksum(&frame)) {
+            if (AorB == 0)
+                printf("  A_input: PACK corrupted.\n");
+            else
+                printf("  B_input: PACK corrupted.\n");
+            send_ack(AorB, false, inc_seq(entity->incomingSeq));
+            return;
+        }
+
+        if (frame.seqnum != entity->incomingSeq) {
+            if (AorB == 0)
+                printf("  A_input: Not the expected SEQ.\n");
+            else
+                printf("  B_input: Not the expected SEQ.\n");
+            send_ack(AorB, false, inc_seq(entity->incomingSeq));
+            return;
+        }
+
+        if (frame.acknum != entity->outgoingSeq) {
+            if (AorB == 0)
+                printf("  A_input: PACK dropped. Not the expected ACK.\n");
+            else
+                printf("  B_input: PACK dropped. Not the expected ACK.\n");
+            return;
+        }
+
+        if (AorB == 0) {
+            printf("  A_input: PACK received: %s:%d\n", frame.payload, frame.type);
+        } else {
+            printf("  B_input: PACK received: %s:%d\n", frame.payload, frame.type);
+        }
+
+        stoptimer(AorB);
+        entity->outgoingSeq = inc_seq(entity->outgoingSeq);
+        entity->state = WAITING_FOR_LAYER3;
+
+        send_ack(AorB, true, entity->incomingSeq);
+
+        tolayer3(AorB, frame.payload);
+        entity->incomingSeq = inc_seq(entity->incomingSeq);
+    }
 }
 
 /* called from layer 1, when a frame arrives for layer 2 */
 void A_input(struct frm frame)
 {
-    if (A_state != WAIT_ACK) {
-        printf("  A_input: Frame dropped. Unidirectional only.\n");
-        return;
-    }
-
-    if (frame.checksum != get_checksum(&frame)) {
-        printf("  A_input: Frame dropped. Corruption.\n");
-        return;
-    }
-
-    if (frame.acknum != A_seq) {
-        printf("  A_input: Frame dropped. Not the expected ACK.\n");
-        return;
-    }
-
-    printf("  A_input: ACK received.\n");
-
-    /* get ready for sendig next packet */
-    stoptimer(0);
-    A_seq = inc_seq(A_seq);
-    A_state = WAIT_LAYER3;
-}
-
-/* called when A's timer goes off */
-void A_timerinterrupt(void)
-{
-    if (A_state != WAIT_ACK) {
-        printf("  A_timerinterrupt: Ignored. Not waiting for ACK.\n");
-        return;
-    }
-
-    printf("  A_timerinterrupt: Resend last frame: %s.\n", A_lastfrm.payload);
-    tolayer1(0, A_lastfrm);
-    starttimer(0, A_tint);
-}
-
-/* the following routine will be called once (only) before any other */
-/* entity A routines are called. You can use it to do any initialization */
-void A_init(void)
-{
-    A_state = WAIT_LAYER3;
-    A_seq = 0;
-    A_tint = 25;
-}
-
-void send_ack(int ack)
-{
-    struct frm frame;
-    frame.acknum = ack;
-    frame.checksum = get_checksum(&frame);
-    tolayer1(1, frame);
+    entity_input(0, frame);
 }
 
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
 /* called from layer 1, when a frame arrives for layer 2 at B*/
 void B_input(struct frm frame)
 {
-    if (frame.checksum != get_checksum(&frame)) {
-        printf("  B_input: Frame corrupted. Send NACK.\n");
-        send_ack(inc_seq(B_seq));
+    entity_input(1, frame);
+}
+
+void entity_timerinterrupt(int AorB)
+{
+    struct Entity *entity;
+    if (AorB == 0) entity = &A;
+    else entity = &B;
+
+    if (entity->state != WAITING_FOR_ACK) {
+        if (AorB == 0)
+            printf("  A_timerinterrupt: Ignored. Not waiting for ACK.\n");
+        else
+            printf("  B_timerinterrupt: Ignored. Not waiting for ACK.\n");
         return;
     }
 
-    if (frame.seqnum != B_seq) {
-        printf("  B_input: Not the expected SEQ. Send NACK.\n");
-        send_ack(inc_seq(B_seq));
-        return;
-    }
+    if (AorB == 0)
+        printf("  A_timerinterrupt: Resend last frame: %s:%d.\n", A.lastFrame.payload, A.lastFrame.type);
+    else
+        printf("  B_timerinterrupt: Resend last frame: %s:%d.\n", B.lastFrame.payload, B.lastFrame.type);
 
-    printf("  B_input: Packet received: %s\n", frame.payload);
-
-    printf("  B_input: Send ACK.\n");
-    send_ack(B_seq);
-
-    tolayer3(1, frame.payload);
-    B_seq = inc_seq(B_seq);
+    tolayer1(AorB, entity->lastFrame);
+    starttimer(AorB, entity->timerInterrupt);
+}
+/* called when A's timer goes off */
+void A_timerinterrupt(void)
+{
+    entity_timerinterrupt(0);
 }
 
 /* called when B's timer goes off */
 void B_timerinterrupt(void)
 {
-    printf("  B_timerinterrupt: B doesn't have a timer. ignore.\n");
+    entity_timerinterrupt(1);
+}
+
+void send_ack(int AorB, bool isAck, int ack)
+{
+    struct Entity *entity;
+    if (AorB == 0) entity = &A;
+    else entity = &B;
+
+    if (!entity->outstandingACK) {
+        if (AorB == 0)
+            printf("  A_input: Waiting for piggybacking.\n");
+        else
+            printf("  B_input: Waiting for piggybacking.\n");
+        entity->lastACK = ack;
+        entity->outstandingACK = true;
+    } else {
+        if (AorB == 0) {
+            if (isAck)
+                printf("  A_input: Send ACK.\n");
+            else
+                printf("  A_input: Send NACK.\n");
+        } else {
+            if (isAck)
+                printf("  B_input: Send ACK.\n");
+            else
+                printf("  B_input: Send NACK.\n");
+        }
+        struct frm frame;
+        frame.type = ACK;
+        frame.acknum = entity->lastACK;
+        frame.checksum = get_checksum(&frame);
+        tolayer1(AorB, frame);
+        entity->outstandingACK = false;
+    }
+}
+
+void entity_init(struct Entity* entity)
+{
+    entity->state = WAITING_FOR_LAYER3;
+    entity->incomingSeq = 0;
+    entity->outgoingSeq = 0;
+    entity->timerInterrupt = 1000;
+}
+
+/* the following routine will be called once (only) before any other */
+/* entity A routines are called. You can use it to do any initialization */
+void A_init(void)
+{
+    entity_init(&A);
 }
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
 void B_init(void)
 {
-    B_seq = 0;
+    entity_init(&B);
 }
 
 
@@ -323,6 +488,7 @@ int main()
         }
         else if (eventptr->evtype == FROM_LAYER1)
         {
+            frm2give.type = eventptr->frmptr->type;
             frm2give.seqnum = eventptr->frmptr->seqnum;
             frm2give.acknum = eventptr->frmptr->acknum;
             frm2give.checksum = eventptr->frmptr->checksum;
@@ -364,31 +530,31 @@ void init() /* initialize the simulator */
 
     printf("-----  Stop and Wait Network Simulator Version 1.1 -------- \n\n");
 
-    printf("Enter the number of packets to simulate: ");
-    scanf("%d",&nsimmax);
-    printf("Enter  frame loss probability [enter 0.0 for no loss]:");
-    scanf("%f",&lossprob);
-    printf("Enter frame corruption probability [0.0 for no corruption]:");
-    scanf("%f",&corruptprob);
-    printf("Enter average time between packets from sender's layer3 [ > 0.0]:");
-    scanf("%f",&lambda);
-    printf("Enter TRACE:");
-    scanf("%d",&TRACE);
+    // printf("Enter the number of packets to simulate: ");
+    // scanf("%d",&nsimmax);
+    // printf("Enter  frame loss probability [enter 0.0 for no loss]:");
+    // scanf("%f",&lossprob);
+    // printf("Enter frame corruption probability [0.0 for no corruption]:");
+    // scanf("%f",&corruptprob);
+    // printf("Enter average time between packets from sender's layer3 [ > 0.0]:");
+    // scanf("%f",&lambda);
+    // printf("Enter TRACE:");
+    // scanf("%d",&TRACE);
 
-    /* nsimmax     = 10; */
-    /* lossprob    = 0.1; */
-    /* corruptprob = 0.3; */
-    /* lambda      = 1000; */
-    /* TRACE       = 2; */
+    nsimmax     = 3;
+    lossprob    = 0.2;
+    corruptprob = 0.2;
+    lambda      = 1000;
+    TRACE       = 2;
 
-    if (WRITE_DOC == 1) fp = freopen("report.doc", "w+", stdout);
+    if (WRITE_DOC == 1) fp = freopen("report.txt", "w+", stdout);
 
-    printf("\n\n");
-    printf("The number of packets to simulate: %d\n", nsimmax);
-    printf("Frame loss probability: %f\n", lossprob);
-    printf("Frame corruption probability: %f\n", corruptprob);
-    printf("Average time between packets from sender's layer3: %f\n", lambda);
-    printf("TRACE: %d\n", TRACE);
+    // printf("\n\n");
+    // printf("The number of packets to simulate: %d\n", nsimmax);
+    // printf("Frame loss probability: %f\n", lossprob);
+    // printf("Frame corruption probability: %f\n", corruptprob);
+    // printf("Average time between packets from sender's layer3: %f\n", lambda);
+    // printf("TRACE: %d\n", TRACE);
 
     srand(9999); /* init random number generator */
     sum = 0.0;   /* test random number generator for students */
@@ -586,6 +752,7 @@ void tolayer1(int AorB, struct frm frame)
     /* make a copy of the frame student just gave me since he/she may decide */
     /* to do something with the frame after we return back to him/her */
     myfrmptr = (struct frm *)malloc(sizeof(struct frm));
+    myfrmptr->type = frame.type;
     myfrmptr->seqnum = frame.seqnum;
     myfrmptr->acknum = frame.acknum;
     myfrmptr->checksum = frame.checksum;
@@ -593,8 +760,8 @@ void tolayer1(int AorB, struct frm frame)
         myfrmptr->payload[i] = frame.payload[i];
     if (TRACE > 2)
     {
-        printf("          TOLAYER1: seq: %d, ack %d, check: %d ", myfrmptr->seqnum,
-               myfrmptr->acknum, myfrmptr->checksum);
+        printf("          TOLAYER1: type : %d seq: %d, ack %d, check: %d ",
+               myfrmptr->type, myfrmptr->seqnum, myfrmptr->acknum, myfrmptr->checksum);
         for (i = 0; i < 20; i++)
             printf("%c", myfrmptr->payload[i]);
         printf("\n");

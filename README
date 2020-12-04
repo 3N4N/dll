@@ -4,4 +4,36 @@ Data Link Layer
 This is an assignment for Level-3/Term-2.
 
 
+Implementation Guideline
+------------------------
 
+[x] Adopt the code from your TCP assignment. Replace 'struct msg' with 'struct
+    pkt'. Also replace 'struct pkt' with 'struct frm'. In each frame, keep an
+    additional variable to designate the type of the frame.
+
+[x] Make necessary changes in the procedure names to replace the word 'layer5'
+    with 'layer3' and 'layer3' with 'layer1'. For example,
+    tolayer3(calling_entity,packet) will be renamed as
+    tolayer1(calling_entity,frame); tolayer5(calling_entity,message) will be
+    renamed as tolayer3(calling_entity,packet).
+
+[x] Unidirectional/bidirectional data transfer. Please follow the TCP assignment
+    guideline to achieve this.
+
+[ ] Implementation of piggybacked acknowledgement: To achieve piggybacking with
+    minimal change in your code, we have come up with the following protocol
+    which differs from the ideal implementation of piggybacking.
+
+
+Protocol for Piggybacked Acknowledgement
+----------------------------------------
+
+After B receives a data frame Fab from A, B does not send an acknowledgement
+immediately. B sets a state variable called “OutstandingACK” to 1. If B receives
+a packet from its upper layer (layer 3) while OutstandingACK = 1, then B creates
+a data-ack frame Fba and piggybacks the acknowledgement of the previously
+received frame Fab in this frame. Otherwise, B creates a data frame.
+
+However, it is possible that B does not receive any data frame to piggyback the
+acknowledgement. In this case, A will eventually resend frame Fab. Upon
+receiving a duplicate frame, B will send the outstanding acknowledge frame

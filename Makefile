@@ -1,10 +1,10 @@
 # Reliable Transport Protocol
 
 CC     = gcc
-CFLAGS = -g -w -std=c99
+CFLAGS = -g -std=c99
 LIBS   =
 
-SRCS   = $(wildcard src/*.c)
+SRCS   = $(wildcard src/rdt.c)
 OBJS   = $(patsubst src/%.c,bin/%.o,$(SRCS))
 DEPS   = $(OBJS:.o:=.d)
 DIRS   = src inc bin
@@ -27,5 +27,8 @@ bin/%.o : src/%.c inc/%.h
 run : all
 	./$(EXE)
 
+test: src/test.c
+	$(CC) -o test.out $(CFLAGS) $<
+
 clean:
-	rm -rf bin *~ $(EXE)
+	rm -rf bin *~ **/*.out
