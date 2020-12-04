@@ -1,7 +1,7 @@
 # Reliable Transport Protocol
 
 CC     = gcc
-CFLAGS = -g -w -std=c99
+CFLAGS = -g -std=c99
 LIBS   =
 
 SRCS   = $(wildcard src/rdt.c)
