@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include "stdint.h"
 
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: SLIGHTLY MODIFIED
@@ -26,7 +27,7 @@
 /* to layer 3 via the students transport level protocol entities.         */
 struct pkt
 {
-    char data[20];
+    char data[4];
 };
 
 enum frmtype {
@@ -44,7 +45,7 @@ struct frm
     int seqnum;
     int acknum;
     int checksum;
-    char payload[20];
+    char payload[4];
 };
 
 /********* FUNCTION PROTOTYPES. DEFINED IN THE LATER PART******************/
@@ -86,10 +87,114 @@ int get_checksum(struct frm *frame) {
     checksum += frame->acknum;
 
     int i;
-    for (i = 0; i < 20; ++i)
+    for (i = 0; i < 4; ++i)
         checksum += frame->payload[i];
 
     return checksum;
+}
+
+uint8_t encode(struct frm *frame)
+{
+    /*
+     * NOTE: a byte is the same as uint8_t
+     */
+
+    /**
+     * Length of input message (dividend) in bytes.
+     */
+    int len = 4 + 3;
+
+    /**
+     * The input message in bytes.
+     */
+    uint8_t *input;
+
+    input = (uint8_t*) malloc(len * sizeof(uint8_t));
+
+    /* Take each element of frm and add its int value to input. */
+    for (int i = 0; i < 4; i++) input[i] = frame->payload[i];
+    input[4] = frame->seqnum;
+    input[5] = frame->acknum;
+    if (frame->type == DATA) input[6] = 0;
+    if (frame->type == ACK) input[6] = 1;
+    if (frame->type == PACK) input[6] = 2;
+    // input[7] = '\0';
+
+    /**
+     * The generator polynomial.
+     */
+    uint8_t generator = 0x1D;
+
+    /**
+     * The byte which will hold the value of CRC remainder.
+     */
+    uint8_t crc = 0;
+
+    uint8_t c;
+
+    for (int i = 0; i < len; i++) {
+        /* Take one byte from input. */
+        c = input[i];
+
+        /* XOR it with CRC register and put it in. */
+        crc ^= c;
+
+        for (int j = 0; j < 8; j++) {
+
+            /* If MSB of CRC is 1, LShift and XOR with generator.
+             * Otherwise, just do LShift.
+             *
+             * 0x80 == 0b10000000 */
+            if (crc & 0x80)
+                crc = (crc << 1 ) ^ generator;
+            else
+                crc <<= 1;
+        }
+    }
+
+    // frame->checksum = crc;
+    free(input);
+    return crc;
+}
+
+/**
+ * Returns the CRC remainder for a frame.
+ */
+uint8_t decode(struct frm *frame)
+{
+    /*
+     * Code is the same as #encode()
+     * except this time the checksum element will be appended to input.
+     */
+    int len = 4 + 4;
+    uint8_t *input = (uint8_t*) malloc(len * sizeof(uint8_t));
+    for (int i = 0; i < 4; i++) input[i] = frame->payload[i];
+    input[4] = frame->seqnum;
+    input[5] = frame->acknum;
+    if (frame->type == DATA) input[6] = 0;
+    if (frame->type == ACK) input[6] = 1;
+    if (frame->type == PACK) input[6] = 2;
+    input[7] = frame->checksum;
+    // input[7] = '\0';
+    uint8_t generator = 0x1D;
+
+    uint8_t c;
+    uint8_t crc = 0;
+
+    for (int i = 0; i < len; i++) {
+        c = input[i];
+        crc ^= c;
+
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x80)
+                crc = (crc << 1 ) ^ generator;
+            else
+                crc <<= 1;
+        }
+    }
+
+    free(input);
+    return crc;
 }
 
 void send_ack(int AorB, bool isAck, int ack);
@@ -119,14 +224,16 @@ void entity_output(int AorB, struct pkt packet)
         frame.type = PACK;
         frame.seqnum = entity->outgoingSeq;
         frame.acknum = entity->lastACK;
+        // frame.acknum = inc_seq(entity->incomingSeq);
     } else {
         frame.type = DATA;
         frame.seqnum = entity->outgoingSeq;
-        frame.acknum = -1;
+        frame.acknum = entity->lastACK;
     }
 
-    memmove(frame.payload, packet.data, 20);
-    frame.checksum = get_checksum(&frame);
+    memmove(frame.payload, packet.data, 4);
+    // frame.checksum = get_checksum(&frame);
+    frame.checksum = encode(&frame);
 
     /* send the frame to B */
     entity->lastFrame = frame;
@@ -168,7 +275,9 @@ void entity_input(int AorB, struct frm frame)
             return;
         }
 
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
+            printf("decoding\n");
             if (AorB == 0)
                 printf("  A_input: ACK dropped. Corruption.\n");
             else
@@ -195,7 +304,8 @@ void entity_input(int AorB, struct frm frame)
         entity->state = WAITING_FOR_LAYER3;
     }
     else if (frame.type == DATA) {
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
             if (AorB == 0)
                 printf("  A_input: Frame corrupted.\n");
             else
@@ -224,7 +334,8 @@ void entity_input(int AorB, struct frm frame)
         tolayer3(AorB, frame.payload);
         entity->incomingSeq = inc_seq(entity->incomingSeq);
     } else if (frame.type == PACK) {
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
             if (AorB == 0)
                 printf("  A_input: PACK corrupted.\n");
             else
@@ -341,8 +452,10 @@ void send_ack(int AorB, bool isAck, int ack)
         }
         struct frm frame;
         frame.type = ACK;
+        frame.seqnum = entity->incomingSeq;
         frame.acknum = entity->lastACK;
-        frame.checksum = get_checksum(&frame);
+        // frame.checksum = get_checksum(&frame);
+        frame.checksum = encode(&frame);
         tolayer1(AorB, frame);
         entity->outstandingACK = false;
     }
@@ -353,7 +466,7 @@ void entity_init(struct Entity* entity)
     entity->state = WAITING_FOR_LAYER3;
     entity->incomingSeq = 0;
     entity->outgoingSeq = 0;
-    entity->timerInterrupt = 1000;
+    entity->timerInterrupt = 20000;
 }
 
 /* the following routine will be called once (only) before any other */
@@ -427,6 +540,15 @@ void insertevent(struct event *p);
 
 FILE *fp;
 
+void printbinchar(char c)
+{
+    for (int i = 7; i >= 0; --i)
+    {
+        putchar( (c & (1 << i)) ? '1' : '0' );
+    }
+    putchar('\n');
+}
+
 int main()
 {
     struct event *eventptr;
@@ -469,13 +591,13 @@ int main()
                     generate_next_arrival(); /* set up future arrival */
                 /* fill in pkt to give with string of same letter */
                 j = nsim % 26;
-                for (i = 0; i < 20; i++)
+                for (i = 0; i < 4; i++)
                     pkt2give.data[i] = 97 + j;
-                pkt2give.data[19] = 0;
+                pkt2give.data[4 - 1] = 0;
                 if (TRACE > 2)
                 {
                     printf("          MAINLOOP: data given to student: ");
-                    for (i = 0; i < 20; i++)
+                    for (i = 0; i < 4; i++)
                         printf("%c", pkt2give.data[i]);
                     printf("\n");
                 }
@@ -492,7 +614,7 @@ int main()
             frm2give.seqnum = eventptr->frmptr->seqnum;
             frm2give.acknum = eventptr->frmptr->acknum;
             frm2give.checksum = eventptr->frmptr->checksum;
-            for (i = 0; i < 20; i++)
+            for (i = 0; i < 4; i++)
                 frm2give.payload[i] = eventptr->frmptr->payload[i];
             if (eventptr->eventity == A) /* deliver frame by calling */
                 A_input(frm2give); /* appropriate entity */
@@ -544,8 +666,8 @@ void init() /* initialize the simulator */
     nsimmax     = 3;
     lossprob    = 0.2;
     corruptprob = 0.2;
-    lambda      = 1000;
-    TRACE       = 2;
+    lambda      = 10000;
+    TRACE       = 1;
 
     if (WRITE_DOC == 1) fp = freopen("report.txt", "w+", stdout);
 
@@ -756,13 +878,13 @@ void tolayer1(int AorB, struct frm frame)
     myfrmptr->seqnum = frame.seqnum;
     myfrmptr->acknum = frame.acknum;
     myfrmptr->checksum = frame.checksum;
-    for (i = 0; i < 20; i++)
+    for (i = 0; i < 4; i++)
         myfrmptr->payload[i] = frame.payload[i];
     if (TRACE > 2)
     {
         printf("          TOLAYER1: type : %d seq: %d, ack %d, check: %d ",
                myfrmptr->type, myfrmptr->seqnum, myfrmptr->acknum, myfrmptr->checksum);
-        for (i = 0; i < 20; i++)
+        for (i = 0; i < 4; i++)
             printf("%c", myfrmptr->payload[i]);
         printf("\n");
     }
