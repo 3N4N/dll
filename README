@@ -20,11 +20,11 @@ Implementation Guideline
 [x] Unidirectional/bidirectional data transfer. Please follow the TCP assignment
     guideline to achieve this.
 
-[ ] Implementation of piggybacked acknowledgement: To achieve piggybacking with
+[x] Implementation of piggybacked acknowledgement: To achieve piggybacking with
     minimal change in your code, we have come up with the following protocol
     which differs from the ideal implementation of piggybacking.
 
-[ ] Error control. You will implement the error detection mechanism using CRC
+[x] Error control. You will implement the error detection mechanism using CRC
     (Cyclic Redundancy Check) checksum. The generator polynomial should be taken
     as input in your code. Your code must print the input bit string to the CRC
     algorithm, generator polynomial, and the calculated CRC while computing CRC
