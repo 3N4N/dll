@@ -8,3 +8,6 @@ bin/
 
 test.c
 report.*
+*.zip
+*.docx
+script.sh

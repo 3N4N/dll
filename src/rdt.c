@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include "stdint.h"
+#include <stdint.h>
+#include <math.h>
 
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: SLIGHTLY MODIFIED
@@ -77,6 +78,19 @@ int inc_seq(int seq) {
     return 1 - seq;
 }
 
+int showcrcsteps;  /* show the CRC steps (1) or not (0) */
+int piggybacking;  /* do piggybacking (1) or not (0) */
+uint8_t generator; /* the CRC generator polynomial */
+
+void send_ack(int AorB, bool isAck, int ack);
+void entity_init(struct Entity* entity);
+void entity_output(int AorB, struct pkt packet);
+void entity_input(int AorB, struct frm frame);
+void entity_timerinterrupt(int AorB);
+void printbinchar(char c);
+void printgenerator();
+
+
 /*
  * Returns the summation of the int values
  * of all members
@@ -121,11 +135,6 @@ uint8_t encode(struct frm *frame)
     // input[7] = '\0';
 
     /**
-     * The generator polynomial.
-     */
-    uint8_t generator = 0x1D;
-
-    /**
      * The byte which will hold the value of CRC remainder.
      */
     uint8_t crc = 0;
@@ -152,6 +161,15 @@ uint8_t encode(struct frm *frame)
         }
     }
 
+    if (showcrcsteps) {
+        printf("ENCODING...\n");
+        printf("Input bit string: ");
+        for (int i = 0; i < len; i++) printbinchar(input[i]); putchar('\n');
+        printf("Generator polynomial: "); printgenerator();
+        printf("CRC remainder: %d\n", crc);
+        printf("CRC remainder: "); printbinchar(crc); putchar('\n');
+        printf("ENCODED.\n");
+    }
     // frame->checksum = crc;
     free(input);
     return crc;
@@ -176,7 +194,6 @@ uint8_t decode(struct frm *frame)
     if (frame->type == PACK) input[6] = 2;
     input[7] = frame->checksum;
     // input[7] = '\0';
-    uint8_t generator = 0x1D;
 
     uint8_t c;
     uint8_t crc = 0;
@@ -193,15 +210,18 @@ uint8_t decode(struct frm *frame)
         }
     }
 
+    if (showcrcsteps) {
+        printf("DECODING...\n");
+        printf("Input bit string: ");
+        for (int i = 0; i < len; i++) printbinchar(input[i]); putchar('\n');
+        printf("Generator polynomial: "); printgenerator();
+        printf("CRC remainder: %d\n", crc);
+        printf("CRC remainder: "); printbinchar(crc); putchar('\n');
+        printf("DECODED\n");
+    }
     free(input);
     return crc;
 }
-
-void send_ack(int AorB, bool isAck, int ack);
-void entity_init(struct Entity* entity);
-void entity_output(int AorB, struct pkt packet);
-void entity_input(int AorB, struct frm frame);
-void entity_timerinterrupt(int AorB);
 
 void entity_output(int AorB, struct pkt packet)
 {
@@ -220,7 +240,7 @@ void entity_output(int AorB, struct pkt packet)
     /* create a frame to send B */
     struct frm frame;
 
-    if (entity->outstandingACK) {
+    if (piggybacking && entity->outstandingACK) {
         frame.type = PACK;
         frame.seqnum = entity->outgoingSeq;
         frame.acknum = entity->lastACK;
@@ -277,7 +297,6 @@ void entity_input(int AorB, struct frm frame)
 
         // if (frame.checksum != get_checksum(&frame)) {
         if (decode(&frame) != 0) {
-            printf("decoding\n");
             if (AorB == 0)
                 printf("  A_input: ACK dropped. Corruption.\n");
             else
@@ -431,7 +450,7 @@ void send_ack(int AorB, bool isAck, int ack)
     if (AorB == 0) entity = &A;
     else entity = &B;
 
-    if (!entity->outstandingACK) {
+    if (piggybacking && !entity->outstandingACK) {
         if (AorB == 0)
             printf("  A_input: Waiting for piggybacking.\n");
         else
@@ -453,7 +472,8 @@ void send_ack(int AorB, bool isAck, int ack)
         struct frm frame;
         frame.type = ACK;
         frame.seqnum = entity->incomingSeq;
-        frame.acknum = entity->lastACK;
+        if (piggybacking) frame.acknum = entity->lastACK;
+        else frame.acknum = ack;
         // frame.checksum = get_checksum(&frame);
         frame.checksum = encode(&frame);
         tolayer1(AorB, frame);
@@ -466,7 +486,7 @@ void entity_init(struct Entity* entity)
     entity->state = WAITING_FOR_LAYER3;
     entity->incomingSeq = 0;
     entity->outgoingSeq = 0;
-    entity->timerInterrupt = 20000;
+    entity->timerInterrupt = 100;
 }
 
 /* the following routine will be called once (only) before any other */
@@ -532,21 +552,27 @@ int ntolayer1;     /* number sent into layer 1 */
 int nlost;         /* number lost in media */
 int ncorrupt;      /* number corrupted by media*/
 
+
 void init();
 void generate_next_arrival(void);
 void insertevent(struct event *p);
 
-#define WRITE_DOC 0
+#define WRITE_DOC 1
 
 FILE *fp;
 
+void printgenerator()
+{
+    putchar('1');
+    printbinchar(generator);
+    putchar('\n');
+}
 void printbinchar(char c)
 {
     for (int i = 7; i >= 0; --i)
     {
         putchar( (c & (1 << i)) ? '1' : '0' );
     }
-    putchar('\n');
 }
 
 int main()
@@ -649,6 +675,7 @@ void init() /* initialize the simulator */
     int i;
     float sum, avg;
     float jimsrand();
+    char *gen = (char*) malloc (8 * sizeof(char));
 
     printf("-----  Stop and Wait Network Simulator Version 1.1 -------- \n\n");
 
@@ -662,21 +689,82 @@ void init() /* initialize the simulator */
     // scanf("%f",&lambda);
     // printf("Enter TRACE:");
     // scanf("%d",&TRACE);
+    // printf("Enter CRC steps (0 or 1):");
+    // scanf("%d",&showcrcsteps);
+    // printf("Enter piggybacking (0 or 1):");
+    // scanf("%d",&piggybacking);
+    // printf("Enter generator polynomial (in binary and less than 9 bits):");
+    // scanf("%s",gen);
 
-    nsimmax     = 3;
-    lossprob    = 0.2;
-    corruptprob = 0.2;
-    lambda      = 10000;
-    TRACE       = 1;
+    int casechoice;
+    printf("Enter case (1, 2, or 3):");
+    scanf("%d", &casechoice);
 
-    if (WRITE_DOC == 1) fp = freopen("report.txt", "w+", stdout);
+    if (casechoice == 1) {
+            nsimmax        = 5;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 500;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    } else if (casechoice == 2) {
+            nsimmax        = 5;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 100;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 1;
+            free(gen); gen = "11101";
+    } else if (casechoice == 3) {
+            nsimmax        = 2;
+            lossprob       = 0.0;
+            corruptprob    = 0.5;
+            lambda         = 500;
+            TRACE          = 1;
+            showcrcsteps   = 1;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    } else {
+            nsimmax        = 3;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 10000;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    }
 
-    // printf("\n\n");
-    // printf("The number of packets to simulate: %d\n", nsimmax);
-    // printf("Frame loss probability: %f\n", lossprob);
-    // printf("Frame corruption probability: %f\n", corruptprob);
-    // printf("Average time between packets from sender's layer3: %f\n", lambda);
-    // printf("TRACE: %d\n", TRACE);
+    int len = strlen(gen);
+    if (len > 8) { printf("ERROR: Generator entered more than 8 bits.\n"); return; }
+    generator = 0;
+    for (int i = 0; i < len; i++) {
+        int x = len - 1 - i;
+        generator += (gen[x] - '0' )* (int) pow(2, i);
+    }
+
+    if (WRITE_DOC == 1) {
+        if (casechoice == 1) fp = freopen("report1.docx", "w+", stdout);
+        else if (casechoice == 2) fp = freopen("report2.docx", "w+", stdout);
+        else if (casechoice == 3) fp = freopen("report3.docx", "w+", stdout);
+        else fp = freopen("report.docx", "w+", stdout);
+    }
+
+    printf("The number of packets to simulate: %d\n", nsimmax);
+    printf("Frame loss probability: %f\n", lossprob);
+    printf("Frame corruption probability: %f\n", corruptprob);
+    printf("Average time between packets from sender's layer3: %f\n", lambda);
+    printf("TRACE: %d\n", TRACE);
+    printf("CRC steps: %d\n", showcrcsteps);
+    printf("Piggybacking: %d\n", piggybacking);
+    printf("Generator polynomial: ");
+    printgenerator();
+    printf("\n\n");
+
+    // return;
 
     srand(9999); /* init random number generator */
     sum = 0.0;   /* test random number generator for students */
