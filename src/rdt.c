@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <math.h>
 
 /* ******************************************************************
  ALTERNATING BIT AND GO-BACK-N NETWORK EMULATOR: SLIGHTLY MODIFIED
@@ -26,7 +28,7 @@
 /* to layer 3 via the students transport level protocol entities.         */
 struct pkt
 {
-    char data[20];
+    char data[4];
 };
 
 enum frmtype {
@@ -44,7 +46,7 @@ struct frm
     int seqnum;
     int acknum;
     int checksum;
-    char payload[20];
+    char payload[4];
 };
 
 /********* FUNCTION PROTOTYPES. DEFINED IN THE LATER PART******************/
@@ -76,6 +78,19 @@ int inc_seq(int seq) {
     return 1 - seq;
 }
 
+int showcrcsteps;  /* show the CRC steps (1) or not (0) */
+int piggybacking;  /* do piggybacking (1) or not (0) */
+uint8_t generator; /* the CRC generator polynomial */
+
+void send_ack(int AorB, bool isAck, int ack);
+void entity_init(struct Entity* entity);
+void entity_output(int AorB, struct pkt packet);
+void entity_input(int AorB, struct frm frame);
+void entity_timerinterrupt(int AorB);
+void printbinchar(char c);
+void printgenerator();
+
+
 /*
  * Returns the summation of the int values
  * of all members
@@ -86,17 +101,127 @@ int get_checksum(struct frm *frame) {
     checksum += frame->acknum;
 
     int i;
-    for (i = 0; i < 20; ++i)
+    for (i = 0; i < 4; ++i)
         checksum += frame->payload[i];
 
     return checksum;
 }
 
-void send_ack(int AorB, bool isAck, int ack);
-void entity_init(struct Entity* entity);
-void entity_output(int AorB, struct pkt packet);
-void entity_input(int AorB, struct frm frame);
-void entity_timerinterrupt(int AorB);
+uint8_t encode(struct frm *frame)
+{
+    /*
+     * NOTE: a byte is the same as uint8_t
+     */
+
+    /**
+     * Length of input message (dividend) in bytes.
+     */
+    int len = 4 + 3;
+
+    /**
+     * The input message in bytes.
+     */
+    uint8_t *input;
+
+    input = (uint8_t*) malloc(len * sizeof(uint8_t));
+
+    /* Take each element of frm and add its int value to input. */
+    for (int i = 0; i < 4; i++) input[i] = frame->payload[i];
+    input[4] = frame->seqnum;
+    input[5] = frame->acknum;
+    if (frame->type == DATA) input[6] = 0;
+    if (frame->type == ACK) input[6] = 1;
+    if (frame->type == PACK) input[6] = 2;
+    // input[7] = '\0';
+
+    /**
+     * The byte which will hold the value of CRC remainder.
+     */
+    uint8_t crc = 0;
+
+    uint8_t c;
+
+    for (int i = 0; i < len; i++) {
+        /* Take one byte from input. */
+        c = input[i];
+
+        /* XOR it with CRC register and put it in. */
+        crc ^= c;
+
+        for (int j = 0; j < 8; j++) {
+
+            /* If MSB of CRC is 1, LShift and XOR with generator.
+             * Otherwise, just do LShift.
+             *
+             * 0x80 == 0b10000000 */
+            if (crc & 0x80)
+                crc = (crc << 1 ) ^ generator;
+            else
+                crc <<= 1;
+        }
+    }
+
+    if (showcrcsteps) {
+        printf("ENCODING...\n");
+        printf("Input bit string: ");
+        for (int i = 0; i < len; i++) printbinchar(input[i]); putchar('\n');
+        printf("Generator polynomial: "); printgenerator();
+        printf("CRC remainder: %d\n", crc);
+        printf("CRC remainder: "); printbinchar(crc); putchar('\n');
+        printf("ENCODED.\n");
+    }
+    // frame->checksum = crc;
+    free(input);
+    return crc;
+}
+
+/**
+ * Returns the CRC remainder for a frame.
+ */
+uint8_t decode(struct frm *frame)
+{
+    /*
+     * Code is the same as #encode()
+     * except this time the checksum element will be appended to input.
+     */
+    int len = 4 + 4;
+    uint8_t *input = (uint8_t*) malloc(len * sizeof(uint8_t));
+    for (int i = 0; i < 4; i++) input[i] = frame->payload[i];
+    input[4] = frame->seqnum;
+    input[5] = frame->acknum;
+    if (frame->type == DATA) input[6] = 0;
+    if (frame->type == ACK) input[6] = 1;
+    if (frame->type == PACK) input[6] = 2;
+    input[7] = frame->checksum;
+    // input[7] = '\0';
+
+    uint8_t c;
+    uint8_t crc = 0;
+
+    for (int i = 0; i < len; i++) {
+        c = input[i];
+        crc ^= c;
+
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x80)
+                crc = (crc << 1 ) ^ generator;
+            else
+                crc <<= 1;
+        }
+    }
+
+    if (showcrcsteps) {
+        printf("DECODING...\n");
+        printf("Input bit string: ");
+        for (int i = 0; i < len; i++) printbinchar(input[i]); putchar('\n');
+        printf("Generator polynomial: "); printgenerator();
+        printf("CRC remainder: %d\n", crc);
+        printf("CRC remainder: "); printbinchar(crc); putchar('\n');
+        printf("DECODED\n");
+    }
+    free(input);
+    return crc;
+}
 
 void entity_output(int AorB, struct pkt packet)
 {
@@ -115,18 +240,20 @@ void entity_output(int AorB, struct pkt packet)
     /* create a frame to send B */
     struct frm frame;
 
-    if (entity->outstandingACK) {
+    if (piggybacking && entity->outstandingACK) {
         frame.type = PACK;
         frame.seqnum = entity->outgoingSeq;
         frame.acknum = entity->lastACK;
+        // frame.acknum = inc_seq(entity->incomingSeq);
     } else {
         frame.type = DATA;
         frame.seqnum = entity->outgoingSeq;
-        frame.acknum = -1;
+        frame.acknum = entity->lastACK;
     }
 
-    memmove(frame.payload, packet.data, 20);
-    frame.checksum = get_checksum(&frame);
+    memmove(frame.payload, packet.data, 4);
+    // frame.checksum = get_checksum(&frame);
+    frame.checksum = encode(&frame);
 
     /* send the frame to B */
     entity->lastFrame = frame;
@@ -168,7 +295,8 @@ void entity_input(int AorB, struct frm frame)
             return;
         }
 
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
             if (AorB == 0)
                 printf("  A_input: ACK dropped. Corruption.\n");
             else
@@ -195,7 +323,8 @@ void entity_input(int AorB, struct frm frame)
         entity->state = WAITING_FOR_LAYER3;
     }
     else if (frame.type == DATA) {
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
             if (AorB == 0)
                 printf("  A_input: Frame corrupted.\n");
             else
@@ -224,7 +353,8 @@ void entity_input(int AorB, struct frm frame)
         tolayer3(AorB, frame.payload);
         entity->incomingSeq = inc_seq(entity->incomingSeq);
     } else if (frame.type == PACK) {
-        if (frame.checksum != get_checksum(&frame)) {
+        // if (frame.checksum != get_checksum(&frame)) {
+        if (decode(&frame) != 0) {
             if (AorB == 0)
                 printf("  A_input: PACK corrupted.\n");
             else
@@ -320,7 +450,7 @@ void send_ack(int AorB, bool isAck, int ack)
     if (AorB == 0) entity = &A;
     else entity = &B;
 
-    if (!entity->outstandingACK) {
+    if (piggybacking && !entity->outstandingACK) {
         if (AorB == 0)
             printf("  A_input: Waiting for piggybacking.\n");
         else
@@ -341,8 +471,11 @@ void send_ack(int AorB, bool isAck, int ack)
         }
         struct frm frame;
         frame.type = ACK;
-        frame.acknum = entity->lastACK;
-        frame.checksum = get_checksum(&frame);
+        frame.seqnum = entity->incomingSeq;
+        if (piggybacking) frame.acknum = entity->lastACK;
+        else frame.acknum = ack;
+        // frame.checksum = get_checksum(&frame);
+        frame.checksum = encode(&frame);
         tolayer1(AorB, frame);
         entity->outstandingACK = false;
     }
@@ -353,7 +486,7 @@ void entity_init(struct Entity* entity)
     entity->state = WAITING_FOR_LAYER3;
     entity->incomingSeq = 0;
     entity->outgoingSeq = 0;
-    entity->timerInterrupt = 1000;
+    entity->timerInterrupt = 100;
 }
 
 /* the following routine will be called once (only) before any other */
@@ -419,13 +552,28 @@ int ntolayer1;     /* number sent into layer 1 */
 int nlost;         /* number lost in media */
 int ncorrupt;      /* number corrupted by media*/
 
+
 void init();
 void generate_next_arrival(void);
 void insertevent(struct event *p);
 
-#define WRITE_DOC 0
+#define WRITE_DOC 1
 
 FILE *fp;
+
+void printgenerator()
+{
+    putchar('1');
+    printbinchar(generator);
+    putchar('\n');
+}
+void printbinchar(char c)
+{
+    for (int i = 7; i >= 0; --i)
+    {
+        putchar( (c & (1 << i)) ? '1' : '0' );
+    }
+}
 
 int main()
 {
@@ -469,13 +617,13 @@ int main()
                     generate_next_arrival(); /* set up future arrival */
                 /* fill in pkt to give with string of same letter */
                 j = nsim % 26;
-                for (i = 0; i < 20; i++)
+                for (i = 0; i < 4; i++)
                     pkt2give.data[i] = 97 + j;
-                pkt2give.data[19] = 0;
+                pkt2give.data[4 - 1] = 0;
                 if (TRACE > 2)
                 {
                     printf("          MAINLOOP: data given to student: ");
-                    for (i = 0; i < 20; i++)
+                    for (i = 0; i < 4; i++)
                         printf("%c", pkt2give.data[i]);
                     printf("\n");
                 }
@@ -492,7 +640,7 @@ int main()
             frm2give.seqnum = eventptr->frmptr->seqnum;
             frm2give.acknum = eventptr->frmptr->acknum;
             frm2give.checksum = eventptr->frmptr->checksum;
-            for (i = 0; i < 20; i++)
+            for (i = 0; i < 4; i++)
                 frm2give.payload[i] = eventptr->frmptr->payload[i];
             if (eventptr->eventity == A) /* deliver frame by calling */
                 A_input(frm2give); /* appropriate entity */
@@ -527,6 +675,7 @@ void init() /* initialize the simulator */
     int i;
     float sum, avg;
     float jimsrand();
+    char *gen = (char*) malloc (8 * sizeof(char));
 
     printf("-----  Stop and Wait Network Simulator Version 1.1 -------- \n\n");
 
@@ -540,21 +689,82 @@ void init() /* initialize the simulator */
     // scanf("%f",&lambda);
     // printf("Enter TRACE:");
     // scanf("%d",&TRACE);
+    // printf("Enter CRC steps (0 or 1):");
+    // scanf("%d",&showcrcsteps);
+    // printf("Enter piggybacking (0 or 1):");
+    // scanf("%d",&piggybacking);
+    // printf("Enter generator polynomial (in binary and less than 9 bits):");
+    // scanf("%s",gen);
 
-    nsimmax     = 3;
-    lossprob    = 0.2;
-    corruptprob = 0.2;
-    lambda      = 1000;
-    TRACE       = 2;
+    int casechoice;
+    printf("Enter case (1, 2, or 3):");
+    scanf("%d", &casechoice);
 
-    if (WRITE_DOC == 1) fp = freopen("report.txt", "w+", stdout);
+    if (casechoice == 1) {
+            nsimmax        = 5;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 500;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    } else if (casechoice == 2) {
+            nsimmax        = 5;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 100;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 1;
+            free(gen); gen = "11101";
+    } else if (casechoice == 3) {
+            nsimmax        = 2;
+            lossprob       = 0.0;
+            corruptprob    = 0.5;
+            lambda         = 500;
+            TRACE          = 1;
+            showcrcsteps   = 1;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    } else {
+            nsimmax        = 3;
+            lossprob       = 0.2;
+            corruptprob    = 0.2;
+            lambda         = 10000;
+            TRACE          = 1;
+            showcrcsteps   = 0;
+            piggybacking   = 0;
+            free(gen); gen = "11101";
+    }
 
-    // printf("\n\n");
-    // printf("The number of packets to simulate: %d\n", nsimmax);
-    // printf("Frame loss probability: %f\n", lossprob);
-    // printf("Frame corruption probability: %f\n", corruptprob);
-    // printf("Average time between packets from sender's layer3: %f\n", lambda);
-    // printf("TRACE: %d\n", TRACE);
+    int len = strlen(gen);
+    if (len > 8) { printf("ERROR: Generator entered more than 8 bits.\n"); return; }
+    generator = 0;
+    for (int i = 0; i < len; i++) {
+        int x = len - 1 - i;
+        generator += (gen[x] - '0' )* (int) pow(2, i);
+    }
+
+    if (WRITE_DOC == 1) {
+        if (casechoice == 1) fp = freopen("report1.docx", "w+", stdout);
+        else if (casechoice == 2) fp = freopen("report2.docx", "w+", stdout);
+        else if (casechoice == 3) fp = freopen("report3.docx", "w+", stdout);
+        else fp = freopen("report.docx", "w+", stdout);
+    }
+
+    printf("The number of packets to simulate: %d\n", nsimmax);
+    printf("Frame loss probability: %f\n", lossprob);
+    printf("Frame corruption probability: %f\n", corruptprob);
+    printf("Average time between packets from sender's layer3: %f\n", lambda);
+    printf("TRACE: %d\n", TRACE);
+    printf("CRC steps: %d\n", showcrcsteps);
+    printf("Piggybacking: %d\n", piggybacking);
+    printf("Generator polynomial: ");
+    printgenerator();
+    printf("\n\n");
+
+    // return;
 
     srand(9999); /* init random number generator */
     sum = 0.0;   /* test random number generator for students */
@@ -756,13 +966,13 @@ void tolayer1(int AorB, struct frm frame)
     myfrmptr->seqnum = frame.seqnum;
     myfrmptr->acknum = frame.acknum;
     myfrmptr->checksum = frame.checksum;
-    for (i = 0; i < 20; i++)
+    for (i = 0; i < 4; i++)
         myfrmptr->payload[i] = frame.payload[i];
     if (TRACE > 2)
     {
         printf("          TOLAYER1: type : %d seq: %d, ack %d, check: %d ",
                myfrmptr->type, myfrmptr->seqnum, myfrmptr->acknum, myfrmptr->checksum);
-        for (i = 0; i < 20; i++)
+        for (i = 0; i < 4; i++)
             printf("%c", myfrmptr->payload[i]);
         printf("\n");
     }

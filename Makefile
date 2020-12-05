@@ -2,7 +2,7 @@
 
 CC     = gcc
 CFLAGS = -g -std=c99
-LIBS   =
+LIBS   = -lm
 
 SRCS   = $(wildcard src/rdt.c)
 OBJS   = $(patsubst src/%.c,bin/%.o,$(SRCS))
@@ -31,4 +31,4 @@ test: src/test.c
 	$(CC) -o test.out $(CFLAGS) $<
 
 clean:
-	rm -rf bin *~ **/*.out
+	rm -rf bin *~ *.out

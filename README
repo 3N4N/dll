@@ -24,6 +24,14 @@ Implementation Guideline
     minimal change in your code, we have come up with the following protocol
     which differs from the ideal implementation of piggybacking.
 
+[ ] Error control. You will implement the error detection mechanism using CRC
+    (Cyclic Redundancy Check) checksum. The generator polynomial should be taken
+    as input in your code. Your code must print the input bit string to the CRC
+    algorithm, generator polynomial, and the calculated CRC while computing CRC
+    on the sender’s side. On the receiver side, print the input bit string to
+    the CRC algorithm, generator polynomial and an error message if a data
+    transmission error has occurred.
+
 
 Protocol for Piggybacked Acknowledgement
 ----------------------------------------
